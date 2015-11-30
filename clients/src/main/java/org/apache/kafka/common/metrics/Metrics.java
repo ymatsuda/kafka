@@ -17,13 +17,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.common.MetricName;
-import org.apache.kafka.common.utils.CopyOnWriteMap;
 import org.apache.kafka.common.utils.SystemTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
@@ -66,6 +66,7 @@ public class Metrics implements Closeable {
 
     /**
      * Create a metrics repository with no metric reporters and default configuration.
+     * Expiration of Sensors is disabled.
      */
     public Metrics() {
         this(new MetricConfig());
@@ -73,6 +74,7 @@ public class Metrics implements Closeable {
 
     /**
      * Create a metrics repository with no metric reporters and default configuration.
+     * Expiration of Sensors is disabled.
      */
     public Metrics(Time time) {
         this(new MetricConfig(), new ArrayList<MetricsReporter>(0), time);
@@ -80,7 +82,7 @@ public class Metrics implements Closeable {
 
     /**
      * Create a metrics repository with no reporters and the given default config. This config will be used for any
-     * metric that doesn't override its own config.
+     * metric that doesn't override its own config. Expiration of Sensors is disabled.
      * @param defaultConfig The default config to use for all metrics that don't override their config
      */
     public Metrics(MetricConfig defaultConfig) {
@@ -88,27 +90,46 @@ public class Metrics implements Closeable {
     }
 
     /**
-     * Create a metrics repository with a default config and the given metric reporters
+     * Create a metrics repository with a default config and the given metric reporters.
+     * Expiration of Sensors is disabled.
      * @param defaultConfig The default config
      * @param reporters The metrics reporters
      * @param time The time instance to use with the metrics
      */
     public Metrics(MetricConfig defaultConfig, List<MetricsReporter> reporters, Time time) {
+        this(defaultConfig, reporters, time, false);
+    }
+
+    /**
+     * Create a metrics repository with a default config, given metric reporters and the ability to expire eligible sensors
+     * @param defaultConfig The default config
+     * @param reporters The metrics reporters
+     * @param time The time instance to use with the metrics
+     * @param enableExpiration true if the metrics instance can garbage collect inactive sensors, false otherwise
+     */
+    public Metrics(MetricConfig defaultConfig, List<MetricsReporter> reporters, Time time, boolean enableExpiration) {
         this.config = defaultConfig;
-        this.sensors = new CopyOnWriteMap<>();
-        this.metrics = new CopyOnWriteMap<>();
-        this.childrenSensors = new CopyOnWriteMap<>();
+        this.sensors = new ConcurrentHashMap<>();
+        this.metrics = new ConcurrentHashMap<>();
+        this.childrenSensors = new ConcurrentHashMap<>();
         this.reporters = Utils.notNull(reporters);
         this.time = time;
         for (MetricsReporter reporter : reporters)
             reporter.init(new ArrayList<KafkaMetric>());
-        this.metricsScheduler = new ScheduledThreadPoolExecutor(1);
-        // Creating a daemon thread to not block shutdown
-        this.metricsScheduler.setThreadFactory(new ThreadFactory() {
-            public Thread newThread(Runnable runnable) {
-                return Utils.newThread("SensorExpiryThread", runnable, true);
-            }
-        });
+
+        // Create the ThreadPoolExecutor only if expiration of Sensors is enabled.
+        if (enableExpiration) {
+            this.metricsScheduler = new ScheduledThreadPoolExecutor(1);
+            // Creating a daemon thread to not block shutdown
+            this.metricsScheduler.setThreadFactory(new ThreadFactory() {
+                public Thread newThread(Runnable runnable) {
+                    return Utils.newThread("SensorExpiryThread", runnable, true);
+                }
+            });
+            this.metricsScheduler.scheduleAtFixedRate(new ExpireSensorTask(), 30, 30, TimeUnit.SECONDS);
+        } else {
+            this.metricsScheduler = null;
+        }
     }
 
     /**
@@ -308,11 +329,13 @@ public class Metrics implements Closeable {
      */
     @Override
     public void close() {
-        this.metricsScheduler.shutdown();
-        try {
-            this.metricsScheduler.awaitTermination(30, TimeUnit.SECONDS);
-        } catch (InterruptedException ex) {
-            // ignore and continue shutdown
+        if (this.metricsScheduler != null) {
+            this.metricsScheduler.shutdown();
+            try {
+                this.metricsScheduler.awaitTermination(30, TimeUnit.SECONDS);
+            } catch (InterruptedException ex) {
+                // ignore and continue shutdown
+            }
         }
 
         for (MetricsReporter reporter : this.reporters)

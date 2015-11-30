@@ -49,7 +49,7 @@ public class MetricsTest {
 
     @Before
     public void setup() {
-        this.metrics = new Metrics(config, Arrays.asList((MetricsReporter) new JmxReporter()), time);
+        this.metrics = new Metrics(config, Arrays.asList((MetricsReporter) new JmxReporter()), time, true);
     }
 
     @After
@@ -320,8 +320,8 @@ public class MetricsTest {
     @Test
     public void testQuotas() {
         Sensor sensor = metrics.sensor("test");
-        sensor.add(new MetricName("test1.total", "grp1"), new Total(), new MetricConfig().quota(Quota.lessThan(5.0)));
-        sensor.add(new MetricName("test2.total", "grp1"), new Total(), new MetricConfig().quota(Quota.moreThan(0.0)));
+        sensor.add(new MetricName("test1.total", "grp1"), new Total(), new MetricConfig().quota(Quota.upperBound(5.0)));
+        sensor.add(new MetricName("test2.total", "grp1"), new Total(), new MetricConfig().quota(Quota.lowerBound(0.0)));
         sensor.record(5.0);
         try {
             sensor.record(1.0);
@@ -341,12 +341,12 @@ public class MetricsTest {
 
     @Test
     public void testQuotasEquality() {
-        final Quota quota1 = Quota.lessThan(10.5);
-        final Quota quota2 = Quota.moreThan(10.5);
+        final Quota quota1 = Quota.upperBound(10.5);
+        final Quota quota2 = Quota.lowerBound(10.5);
 
         assertFalse("Quota with different upper values shouldn't be equal", quota1.equals(quota2));
 
-        final Quota quota3 = Quota.moreThan(10.5);
+        final Quota quota3 = Quota.lowerBound(10.5);
 
         assertTrue("Quota with same upper and bound values should be equal", quota2.equals(quota3));
     }
@@ -382,6 +382,34 @@ public class MetricsTest {
         assertEquals(0.0, p25.value(), 1.0);
         assertEquals(0.0, p50.value(), 1.0);
         assertEquals(0.0, p75.value(), 1.0);
+    }
+
+    @Test
+    public void testRateWindowing() throws Exception {
+        // Use the default time window. Set 3 samples
+        MetricConfig cfg = new MetricConfig().samples(3);
+        Sensor s = metrics.sensor("test.sensor", cfg);
+        s.add(new MetricName("test.rate", "grp1"), new Rate(TimeUnit.SECONDS));
+
+        int sum = 0;
+        int count = cfg.samples() - 1;
+        // Advance 1 window after every record
+        for (int i = 0; i < count; i++) {
+            s.record(100);
+            sum += 100;
+            time.sleep(cfg.timeWindowMs());
+        }
+
+        // Sleep for half the window.
+        time.sleep(cfg.timeWindowMs() / 2);
+
+        // prior to any time passing
+        double elapsedSecs = (cfg.timeWindowMs() * (cfg.samples() - 1) + cfg.timeWindowMs() / 2) / 1000.0;
+
+        KafkaMetric km = metrics.metrics().get(new MetricName("test.rate", "grp1"));
+        assertEquals("Rate(0...2) = 2.666", sum / elapsedSecs, km.value(), EPS);
+        assertEquals("Elapsed Time = 75 seconds", elapsedSecs,
+                ((Rate) km.measurable()).windowSize(cfg, time.milliseconds()) / 1000, EPS);
     }
 
     public static class ConstantMeasurable implements Measurable {

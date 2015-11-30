@@ -17,20 +17,20 @@
 
 package org.apache.kafka.streams.examples;
 
-import org.apache.kafka.common.serialization.IntegerSerializer;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.common.serialization.IntegerDeserializer;
+import org.apache.kafka.common.serialization.IntegerSerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.streams.KafkaStreaming;
+import org.apache.kafka.streams.StreamingConfig;
 import org.apache.kafka.streams.processor.Processor;
+import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.ProcessorSupplier;
 import org.apache.kafka.streams.processor.TopologyBuilder;
-import org.apache.kafka.streams.processor.ProcessorContext;
-import org.apache.kafka.streams.StreamingConfig;
 import org.apache.kafka.streams.state.Entry;
-import org.apache.kafka.streams.state.InMemoryKeyValueStore;
 import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.KeyValueStore;
+import org.apache.kafka.streams.state.Stores;
 
 import java.util.Properties;
 
@@ -45,10 +45,11 @@ public class ProcessorJob {
                 private KeyValueStore<String, Integer> kvStore;
 
                 @Override
+                @SuppressWarnings("unchecked")
                 public void init(ProcessorContext context) {
                     this.context = context;
                     this.context.schedule(1000);
-                    this.kvStore = new InMemoryKeyValueStore<>("local-state", context);
+                    this.kvStore = (KeyValueStore<String, Integer>) context.getStateStore("local-state");
                 }
 
                 @Override
@@ -103,6 +104,8 @@ public class ProcessorJob {
         builder.addSource("SOURCE", new StringDeserializer(), new StringDeserializer(), "topic-source");
 
         builder.addProcessor("PROCESS", new MyProcessorSupplier(), "SOURCE");
+        builder.addStateStore(Stores.create("local-state").withStringKeys().withIntegerValues().inMemory().build());
+        builder.connectProcessorAndStateStores("local-state", "PROCESS");
 
         builder.addSink("SINK", "topic-sink", new StringSerializer(), new IntegerSerializer(), "PROCESS");
 

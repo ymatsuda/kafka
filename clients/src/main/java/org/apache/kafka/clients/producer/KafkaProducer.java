@@ -36,6 +36,7 @@ import org.apache.kafka.common.errors.InterruptException;
 import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.errors.TimeoutException;
+import org.apache.kafka.common.errors.TopicAuthorizationException;
 import org.apache.kafka.common.metrics.JmxReporter;
 import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.MetricName;
@@ -75,7 +76,7 @@ import org.slf4j.LoggerFactory;
  * props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
  * props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
  *
- * Producer<String, String> producer = new KafkaProducer(props);
+ * Producer<String, String> producer = new KafkaProducer<>(props);
  * for(int i = 0; i < 100; i++)
  *     producer.send(new ProducerRecord<String, String>("my-topic", Integer.toString(i), Integer.toString(i)));
  *
@@ -276,7 +277,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     config.getLong(ProducerConfig.RECONNECT_BACKOFF_MS_CONFIG),
                     config.getInt(ProducerConfig.SEND_BUFFER_CONFIG),
                     config.getInt(ProducerConfig.RECEIVE_BUFFER_CONFIG),
-                    this.requestTimeoutMs);
+                    this.requestTimeoutMs, time);
             this.sender = new Sender(client,
                     this.metadata,
                     this.accumulator,
@@ -418,7 +419,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         " to class " + producerConfig.getClass(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG).getName() +
                         " specified in key.serializer");
             }
-            long remainingTime = checkMaybeGetRemainingTime(startTime);
+            checkMaybeGetRemainingTime(startTime);
             byte[] serializedValue;
             try {
                 serializedValue = valueSerializer.serialize(record.topic(), record.value());
@@ -427,14 +428,14 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         " to class " + producerConfig.getClass(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG).getName() +
                         " specified in value.serializer");
             }
-            remainingTime = checkMaybeGetRemainingTime(startTime);
+            checkMaybeGetRemainingTime(startTime);
             int partition = partition(record, serializedKey, serializedValue, metadata.fetch());
-            remainingTime = checkMaybeGetRemainingTime(startTime);
+            checkMaybeGetRemainingTime(startTime);
             int serializedSize = Records.LOG_OVERHEAD + Record.recordSize(serializedKey, serializedValue);
             ensureValidRecordSize(serializedSize);
             TopicPartition tp = new TopicPartition(record.topic(), partition);
             log.trace("Sending record {} with callback {} to topic {} partition {}", record, callback, record.topic(), partition);
-            remainingTime = checkMaybeGetRemainingTime(startTime);
+            long remainingTime = checkMaybeGetRemainingTime(startTime);
             RecordAccumulator.RecordAppendResult result = accumulator.append(tp, serializedKey, serializedValue, callback, remainingTime);
             if (result.batchIsFull || result.newBatchCreated) {
                 log.trace("Waking up the sender since topic {} partition {} is either full or getting a new batch", record.topic(), partition);
@@ -473,21 +474,22 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         if (!this.metadata.containsTopic(topic))
             this.metadata.add(topic);
 
-        if (metadata.fetch().partitionsForTopic(topic) != null) {
+        if (metadata.fetch().partitionsForTopic(topic) != null)
             return;
-        } else {
-            long begin = time.milliseconds();
-            long remainingWaitMs = maxWaitMs;
-            while (metadata.fetch().partitionsForTopic(topic) == null) {
-                log.trace("Requesting metadata update for topic {}.", topic);
-                int version = metadata.requestUpdate();
-                sender.wakeup();
-                metadata.awaitUpdate(version, remainingWaitMs);
-                long elapsed = time.milliseconds() - begin;
-                if (elapsed >= maxWaitMs)
-                    throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
-                remainingWaitMs = maxWaitMs - elapsed;
-            }
+
+        long begin = time.milliseconds();
+        long remainingWaitMs = maxWaitMs;
+        while (metadata.fetch().partitionsForTopic(topic) == null) {
+            log.trace("Requesting metadata update for topic {}.", topic);
+            int version = metadata.requestUpdate();
+            sender.wakeup();
+            metadata.awaitUpdate(version, remainingWaitMs);
+            long elapsed = time.milliseconds() - begin;
+            if (elapsed >= maxWaitMs)
+                throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
+            if (metadata.fetch().unauthorizedTopics().contains(topic))
+                throw new TopicAuthorizationException(topic);
+            remainingWaitMs = maxWaitMs - elapsed;
         }
     }
 
@@ -679,7 +681,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     }
 
     /**
-     * Check and may be get the time elapsed since startTime.
+     * Check and maybe get the time elapsed since startTime.
      * Throws a {@link org.apache.kafka.common.errors.TimeoutException} if the  elapsed time
      * is more than the max time to block (max.block.ms)
      *
@@ -689,7 +691,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private long checkMaybeGetRemainingTime(long startTime) {
         long elapsedTime = time.milliseconds() - startTime;
         if (elapsedTime > maxBlockTimeMs) {
-            throw new TimeoutException("Request timed out");
+            throw new TimeoutException("Request timed out due to exceeding the maximum threshold of " + maxBlockTimeMs + " ms");
         }
         long remainingTime = maxBlockTimeMs - elapsedTime;
 

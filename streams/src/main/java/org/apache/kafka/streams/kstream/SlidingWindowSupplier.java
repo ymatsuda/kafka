@@ -26,7 +26,6 @@ import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.streams.kstream.internals.FilteredIterator;
 import org.apache.kafka.streams.kstream.internals.WindowSupport;
 import org.apache.kafka.streams.processor.StateRestoreCallback;
-import org.apache.kafka.streams.processor.internals.ProcessorContextImpl;
 import org.apache.kafka.streams.processor.internals.RecordCollector;
 import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.internals.Stamped;
@@ -76,6 +75,7 @@ public class SlidingWindowSupplier<K, V> implements WindowSupplier<K, V> {
     public class SlidingWindow extends WindowSupport implements Window<K, V> {
         private final Object lock = new Object();
         private ProcessorContext context;
+        private int partition;
         private int slotNum; // used as a key for Kafka log compaction
         private LinkedList<K> list = new LinkedList<K>();
         private HashMap<K, ValueList<V>> map = new HashMap<>();
@@ -83,6 +83,7 @@ public class SlidingWindowSupplier<K, V> implements WindowSupplier<K, V> {
         @Override
         public void init(ProcessorContext context) {
             this.context = context;
+            this.partition = context.id().partition;
             SlidingWindowRegistryCallback restoreFunc = new SlidingWindowRegistryCallback();
             context.register(this, restoreFunc);
 
@@ -186,7 +187,7 @@ public class SlidingWindowSupplier<K, V> implements WindowSupplier<K, V> {
             IntegerSerializer intSerializer = new IntegerSerializer();
             ByteArraySerializer byteArraySerializer = new ByteArraySerializer();
 
-            RecordCollector collector = ((ProcessorContextImpl) context).recordCollector();
+            RecordCollector collector = ((RecordCollector.Supplier) context).recordCollector();
 
             for (Map.Entry<K, ValueList<V>> entry : map.entrySet()) {
                 ValueList<V> values = entry.getValue();
@@ -211,7 +212,7 @@ public class SlidingWindowSupplier<K, V> implements WindowSupplier<K, V> {
                         if (offset != combined.length)
                             throw new IllegalStateException("serialized length does not match");
 
-                        collector.send(new ProducerRecord<>(name, context.id(), slot, combined), byteArraySerializer, byteArraySerializer);
+                        collector.send(new ProducerRecord<>(name, partition, slot, combined), byteArraySerializer, byteArraySerializer);
                     }
                     values.clearDirtyValues();
                 }

@@ -17,9 +17,14 @@
 
 package org.apache.kafka.streams.kstream;
 
+import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.kstream.internals.KStreamImpl;
 import org.apache.kafka.streams.processor.TopologyException;
+import org.apache.kafka.test.KStreamTestDriver;
+import org.apache.kafka.test.MockProcessorSupplier;
 import org.junit.Test;
+
+import static org.junit.Assert.assertEquals;
 
 public class KStreamBuilderTest {
 
@@ -29,6 +34,47 @@ public class KStreamBuilderTest {
 
         builder.from("topic-1", "topic-2");
 
-        builder.addSource(KStreamImpl.SOURCE_NAME + KStreamImpl.INDEX.decrementAndGet(), "topic-3");
+        builder.addSource(KStreamImpl.SOURCE_NAME + "0000000000", "topic-3");
     }
+
+    @Test
+    public void testNewName() {
+        KStreamBuilder builder = new KStreamBuilder();
+
+        assertEquals("X-0000000000", builder.newName("X-"));
+        assertEquals("Y-0000000001", builder.newName("Y-"));
+        assertEquals("Z-0000000002", builder.newName("Z-"));
+
+        builder = new KStreamBuilder();
+
+        assertEquals("X-0000000000", builder.newName("X-"));
+        assertEquals("Y-0000000001", builder.newName("Y-"));
+        assertEquals("Z-0000000002", builder.newName("Z-"));
+    }
+
+    @Test
+    public void testMerge() {
+        String topic1 = "topic-1";
+        String topic2 = "topic-2";
+
+        KStreamBuilder builder = new KStreamBuilder();
+
+        KStream<String, String> source1 = builder.from(topic1);
+        KStream<String, String> source2 = builder.from(topic2);
+        KStream<String, String> merged = builder.merge(source1, source2);
+
+        MockProcessorSupplier<String, String> processorSupplier = new MockProcessorSupplier<>();
+        merged.process(processorSupplier);
+
+        KStreamTestDriver driver = new KStreamTestDriver(builder);
+        driver.setTime(0L);
+
+        driver.process(topic1, "A", "aa");
+        driver.process(topic2, "B", "bb");
+        driver.process(topic2, "C", "cc");
+        driver.process(topic1, "D", "dd");
+
+        assertEquals(Utils.mkList("A:aa", "B:bb", "C:cc", "D:dd"), processorSupplier.processed);
+    }
+
 }

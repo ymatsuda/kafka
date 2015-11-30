@@ -145,12 +145,6 @@ public class PartitionGroup {
         }
     }
 
-    public int topQueueSize() {
-        RecordQueue recordQueue = queuesByTime.peek();
-
-        return (recordQueue == null) ? 0 : recordQueue.size();
-    }
-
     public int numBuffered(TopicPartition partition) {
         RecordQueue recordQueue = partitionQueues.get(partition);
 
@@ -158,6 +152,11 @@ public class PartitionGroup {
             throw new KafkaException("Record's partition does not belong to this partition-group.");
 
         return recordQueue.size();
+    }
+
+    public int topQueueSize() {
+        RecordQueue recordQueue = queuesByTime.peek();
+        return (recordQueue == null) ? 0 : recordQueue.size();
     }
 
     public int numBuffered() {
