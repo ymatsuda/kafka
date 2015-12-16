@@ -18,9 +18,9 @@ import kafka.server.KafkaConfig
 import kafka.utils.TestUtils
 import org.apache.kafka.clients.consumer._
 import org.apache.kafka.clients.producer.ProducerRecord
-import org.apache.kafka.common.TopicPartition
+import org.apache.kafka.common.{KafkaException, TopicPartition}
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
-import org.apache.kafka.common.errors.RecordTooLargeException
+import org.apache.kafka.common.errors.{InvalidTopicException, RecordTooLargeException}
 import org.junit.Assert._
 import org.junit.Test
 import scala.collection.mutable.Buffer
@@ -249,7 +249,17 @@ class PlaintextConsumerTest extends BaseConsumerTest {
     val parts = this.consumers(0).partitionsFor("part-test")
     assertNotNull(parts)
     assertEquals(2, parts.size)
-    assertNull(this.consumers(0).partitionsFor("non-exist-topic"))
+  }
+
+  @Test
+  def testPartitionsForAutoCreate() {
+    val partitions = this.consumers(0).partitionsFor("non-exist-topic")
+    assertFalse(partitions.isEmpty)
+  }
+
+  @Test(expected=classOf[InvalidTopicException])
+  def testPartitionsForInvalidTopic() {
+    this.consumers(0).partitionsFor(";3# ads,{234")
   }
 
   @Test
@@ -605,12 +615,12 @@ class PlaintextConsumerTest extends BaseConsumerTest {
    * pollers for these consumers. Wait for partition re-assignment and validate.
    *
    * Currently, assignment validation requires that total number of partitions is greater or equal to
-   * number of consumers, so subscriptions.size must be greate or equal the resulting number of consumers in the group
+   * number of consumers, so subscriptions.size must be greater or equal the resulting number of consumers in the group
    *
    * @param numOfConsumersToAdd number of consumers to create and add to the consumer group
    * @param consumerGroup current consumer group
    * @param consumerPollers current consumer pollers
-   * @param topicsToSubscribe topics to which new consumers will subsribe to
+   * @param topicsToSubscribe topics to which new consumers will subscribe to
    * @param subscriptions set of all topic partitions
    */
   def addConsumersToGroupAndWaitForGroupAssignment(numOfConsumersToAdd: Int,
@@ -654,7 +664,7 @@ class PlaintextConsumerTest extends BaseConsumerTest {
     for (poller <- consumerPollers)
       poller.subscribe(topicsToSubscribe)
 
-    // since subscribe call to poller does not actually call consumer subsribe right away, wait
+    // since subscribe call to poller does not actually call consumer subscribe right away, wait
     // until subscribe is called on all consumers
     TestUtils.waitUntilTrue(() => {
       consumerPollers forall (poller => poller.isSubscribeRequestProcessed())
